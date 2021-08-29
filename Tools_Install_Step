@@ -1,0 +1,66 @@
+====================Install Jenkins=============================
+sudo yum update -y
+sudo yum install wget git -y
+sudo amazon-linux-extras install java-openjdk11
+java -version
+
+sudo tee /etc/yum.repos.d/jenkins.repo<<EOF
+[jenkins]
+name=Jenkins
+baseurl=http://pkg.jenkins.io/redhat
+gpgcheck=0
+EOF
+
+sudo rpm --import https://jenkins-ci.org/redhat/jenkins-ci.org.key
+sudo yum repolist
+sudo yum install jenkins
+sudo systemctl start jenkins
+sudo systemctl enable jenkins
+systemctl status jenkins
+http://[serverip_ip_or_hostname]:8080
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+
+====================Install SonarQube=============================
+use below link for sonarqube installation
+https://medium.com/swlh/one-point-stop-for-installing-sonarqube-server-in-an-aws-ec2-instance-2b287da39e42
+
+====================Install Docker=============================
+sudo amazon-linux-extras install docker
+sudo service docker start
+sudo usermod -a -G docker ec2-user
+sudo chkconfig docker on
+
+====================SysDig Scan=============================
+You can use SysDig official site for free trial and installation
+https://sysdig.com/company/start-free/
+
+====================Jmeter Install=============================
+wget http://apache.stu.edu.tw//jmeter/binaries/apache-jmeter-5.2.1.tgz
+tar -xf apache-jmeter-5.2.1.tgz
+vim ~/.bashrc
+export JMETER_HOME=/root/apache-jmeter-5.2.1
+export PATH=$JMETER_HOME/bin:$PATH
+source ~/.bashrc
+Use load.jmx for testrun . change app hosturl and port number
+
+====================Minikube/Istio/yq/=============================
+
+curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+sudo install minikube-linux-amd64 /usr/local/bin/minikube
+cd /usr/local/bin
+export PATH=$PWD:$PATH
+
+Istio :
+curl -L https://istio.io/downloadIstio | sh -
+export PATH=$PWD/bin:$PATH
+
+yq:
+wget https://github.com/mikefarah/yq/releases/download/${VERSION}/${BINARY}.tar.gz -O - |\
+tar xz && mv ${BINARY} /usr/bin/yq
+=====================================================================
+
+
+
+
+
+
