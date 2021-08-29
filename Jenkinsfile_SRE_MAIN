@@ -1,0 +1,52 @@
+pipeline {
+    agent {label ''}
+    stages {
+     stage('Setup parameters') {
+            steps {
+                script { properties([parameters([choice(choices: ['Select-Below', 'First_Release', 'Update_Release'], description: 'Select the release type above', name: 'Release_Type'), choice(choices: ['Select-Below', 'Existing', 'New'], description: 'Select the Infrastructure type above', name: 'Infra_Type'), choice(choices: ['Select-Below', 'AWS', 'GCP', 'Azure', 'DC'], description: 'Select the cloud platform above', name: 'Platform'), choice(choices: ['Select-Below', 'Rolling-Update', 'Blue-Green', 'Canary', 'AB-Testing'], description: 'Select the deployment strategy above', name: 'Release_Strategy')])])
+                echo " parameters check"
+                }
+            }
+        }
+     stage('Start Pipeline ') {
+         steps {
+            script{  
+                echo " start pipeline check "      
+                if (params.Release_Type == 'First_Release' && params.Infra_Type == 'Existing') 
+                {
+                    if (params.Platform == 'DC'){
+                    echo "Start Job for ${Release_Type}-Release and ${Infra_Type}-Infrastructure"
+                    build 'Sockshop_Initial_Release'
+                    //build 'Sockshop_Initial_Release'
+                    }
+                }
+                else if ( params.Release_Type == 'First_Release' && params.Infra_Type == 'New' )
+                {
+                    if (params.Platform == 'DC'){
+                    echo "Start Job with platform ${Platform} resource creation for ${Release_Type}-Release and ${Infra_Type}-Infrastructure"
+                    //build 'Sockshop_Initial_Release with resource creation'
+                    }
+                    else if (params.Platform == 'AWS'){
+                    echo "Start Job for ${Release_Type}-Release and ${Infra_Type}-Infrastructure"
+                    build job: 'Sockshop_Platform_Initial_Release', parameters: [string(name: 'Platform_Type', value: String.valueOf(Platform))]
+                    // build 'Sockshop_Initial_Release for platform specific'
+                    }
+                }
+                else if ( params.Release_Type == 'Update_Release' && params.Infra_Type == 'Existing')
+                {
+                     if (params.Platform == 'DC'){
+                    echo "Start Job for ${Release_Type}-Release and ${Infra_Type}-Infrastructure"
+                    build job: 'Sock_Shop_Deploy_All_strategy', parameters: [string(name: 'deployStrategy', value: String.valueOf(Release_Strategy))]
+                    //build 'Sock_Shop_Deploy_All_strategy with resource creation'
+                     }
+                    else if (params.Platform == 'AWS'){
+                    echo "Start Job with platform ${Platform} for ${Release_Type}-Release and ${Infra_Type}-Infrastructure"
+                    build job: 'Sockshop_Platform_Deploy_All_strategy', parameters: [string(name: 'Platform_Type', value: String.valueOf(Platform)), string(name: 'deployStrategy', value: String.valueOf(Release_Strategy))]
+                    // build 'Sockshop_Initial_Release for platform specific'
+                     }
+                }
+            }
+         }
+        }
+    }// stages end
+} //pipeline end
