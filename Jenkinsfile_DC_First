@@ -1,0 +1,123 @@
+pipeline {
+    agent any
+    stages {
+        stage('Code Checkout') {
+              steps {
+               echo("************************** Code Checkout Start**************************")
+               checkout changelog: false, poll: false, scm: [$class: 'GitSCM', branches: [[name: '*/master']], extensions: [], userRemoteConfigs: [[credentialsId: 'GIT_CREDENTIALS', url: 'https://github.com/siteshmanjul/front-end.git']]]
+               echo("************************** Code Checkout End****************************")
+                  }
+                  }
+     stage('Code Scan with SonarQube') {
+               steps{
+                    echo("************************** Code Scan SonarQube Start**************************")     
+                    //sh "/opt/sonarscanner/sonar-scanner-4.6/bin/sonar-scanner -X -Dsonar.host.url=http://:9000/sonar/ -Dsonar.sources=/opt/jenkins_home/workspace/${env.JOB_NAME} -Dsonar.login=admin -Dsonar.password=admin -Dsonar.projectKey=SRE-DEMO -Dsonar.projectVersion=1.0 -Dsonar.host.url=http://:9000/sonar   -Dsonar.projectName=SRE-DEMO -Dsonar.projectBaseDir=/opt/jenkins_home/workspace/${env.JOB_NAME}"        
+                    //echo "http://:9000/sonar/dashboard?id=SRE-DEMO"
+                    echo("************************** Code Scan SonarQube End****************************")
+                  }           
+              }// 
+     stage('Resource Creation') {
+              steps {
+               echo("**************************Create Minikube Cluster**************************")
+               sh "/usr/local/bin/minikube start --driver=none"
+               sh "istioctl install --set profile=demo -y"
+               sh "kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.11/samples/addons/kiali.yaml"
+               sh "kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.11/samples/addons/prometheus.yaml"
+               echo("************************** Resource stage completed****************************")
+                  }
+                  }
+     stage("Build image") {
+            steps {
+                script {
+                    echo("************************** Build Image Start**************************")
+                    //sh "sed -i  's/Version/V:${env.BUILD_ID}/g' server.js"
+                    myapp = docker.build("repname/front-end:${env.BUILD_ID}")
+                    echo("************************** Build Image Completed**************************")
+                }
+            }
+        }
+     stage("SysDig Scan and Push Image") {
+            steps {
+                script {
+                    echo("************************** SysDig Scan Image Start**************************")
+                    sh "docker run --rm quay.io/sysdig/secure-inline-scan:2 reponame/front-end:${env.BUILD_ID} --sysdig-token <usetoken> --sysdig-url https://us2.app.sysdig.com -o"
+                    echo("************************** SysDig Scan Image Complete**************************")
+                try {
+                def buildCoreImage = input(
+                    message: 'Do you want to move Image to Approved DockerHub?',
+                    ok: 'Yes', 
+                    id: 'ScanApprove',
+                    parameters: [
+                        booleanParam(defaultValue: true, description: 'Push the button to move image.',name: 'Yes?')
+                    ]
+                )
+                echo "Build core?:" + buildCoreImage
+                if (buildCoreImage == true){
+                    docker.withRegistry('https://registry.hub.docker.com', 'dockerhub_id_sitesh') {
+                    myapp.push("${env.BUILD_ID}")
+                    echo("************************** Docker Image Push Completed**************************")
+                        }
+                    }
+                else    
+                    {        
+                    System.exit(0)
+                        }
+                    }
+                catch (Exception err)
+                    {
+                throw err
+                    }
+                }
+            }
+         }
+     stage('Switch to sock-shop Namespace ') {
+             steps {
+                script{
+                    echo("************************** Namespace Check Start**************************")
+                    def namespace = sh (script :"/usr/local/bin/kubectl get ns  | grep sock-shop | awk '{print \$1}'", returnStdout:true)
+                    def ns = namespace.trim()
+                    if (ns.equals("sock-shop"))
+                        {
+                           echo "sock-shop namespace exsist"
+                        }
+                    else
+                        {
+                         sh "/usr/local/bin/kubectl create namespace sock-shop"
+                         sh "/usr/local/bin/kubectl label namespace sock-shop istio-injection=enabled"
+                         }
+                    echo("************************** Namespace Check END**************************")
+                        }
+                      }// Namespace Creation
+                    }
+     stage('Deployment') {
+          steps {
+         script{
+                sh "sed -i  's/front-end:Test/front-end:${env.BUILD_ID}/g' deploy.yaml"
+                sh "/usr/local/bin/kubectl apply -f deploy.yaml"     
+                sh "/usr/local/bin/kubectl apply -f service.yaml"          
+                sh "/usr/local/bin/kubectl apply -f all_deploy_service.yaml"
+             }
+            }
+          }
+      stage('Load Test - JMeter') {
+        steps {
+             script{
+            echo("************************** JMeter Load Testing Start**************************")        
+            //sh '''/root/apache-jmeter-5.4.1/bin/jmeter -n -t /opt/apache-jmeter-5.4.1/jpetaws.jmx -l result.csv '''
+            //step([$class: 'ArtifactArchiver', artifacts: '**/*.csv, **/jmeter.log'])
+            //step([$class: 'ArtifactArchiver', artifacts: 'Test.html', fingerprint: true])
+            }    
+        }
+    }
+    stage('SysDig Monitor') {
+        steps {
+             script{
+            echo("************************** Monitor Containers using SysDig**************************")
+            echo("Click on below link for Monitor Dashboard")
+            echo "https://us2.app.sysdig.com/secure/#/overview"
+            echo("************************** Monitor Containers using SysDig Stage Completed**************************")
+            }    
+        }
+    }
+        }// stages closed
+    }
