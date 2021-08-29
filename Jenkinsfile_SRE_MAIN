@@ -16,7 +16,7 @@ pipeline {
                 {
                     if (params.Platform == 'DC'){
                     echo "Start Job for ${Release_Type}-Release and ${Infra_Type}-Infrastructure"
-                    build 'Sockshop_Initial_Release'
+                    //build 'Sockshop_Initial_Release'
                     //build 'Sockshop_Initial_Release'
                     }
                 }
@@ -24,7 +24,7 @@ pipeline {
                 {
                     if (params.Platform == 'DC'){
                     echo "Start Job with platform ${Platform} resource creation for ${Release_Type}-Release and ${Infra_Type}-Infrastructure"
-                    //build 'Sockshop_Initial_Release with resource creation'
+                    build 'Sockshop_Initial_Release'
                     }
                     else if (params.Platform == 'AWS'){
                     echo "Start Job for ${Release_Type}-Release and ${Infra_Type}-Infrastructure"
