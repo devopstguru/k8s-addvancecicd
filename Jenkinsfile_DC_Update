@@ -1,0 +1,197 @@
+pipeline {
+    agent any
+    stages {
+        stage('Setup parameters') {
+            steps {
+                script { properties([parameters([choice(choices: ['Rolling-Update', 'Blue-Green', 'Canary', 'AB-Testing'], description: 'Select Deployment Strategy', name: 'deployStrategy')])])
+                }
+            }
+        }
+        stage('Code Checkout') {
+              steps {
+               echo("************************** Code Checkout Start**************************")
+               checkout changelog: false, poll: false, scm: [$class: 'GitSCM', branches: [[name: '*/master']], extensions: [], userRemoteConfigs: [[credentialsId: 'GIT_CREDENTIALS', url: 'https://github.com/siteshmanjul/front-end.git']]]
+               echo("************************** Code Checkout End****************************")
+                  }
+                  }
+     stage('Code Scan with SonarQube') {
+               steps{
+                    echo("************************** Code Scan SonarQube Start**************************")     
+                    //sh "/opt/sonarscanner/sonar-scanner-4.6/bin/sonar-scanner -X -Dsonar.host.url=http://:9000/sonar/ -Dsonar.sources=/opt/jenkins_home/workspace/${env.JOB_NAME} -Dsonar.login=admin -Dsonar.password=admin -Dsonar.projectKey=SRE-DEMO -Dsonar.projectVersion=1.0 -Dsonar.host.url=http://:9000/sonar   -Dsonar.projectName=SRE-DEMO -Dsonar.projectBaseDir=/opt/jenkins_home/workspace/${env.JOB_NAME}"        
+                    //echo "http://:9000/sonar/dashboard?id=SRE-DEMO"
+                    echo("************************** Code Scan SonarQube End****************************")
+                  }           
+              }// 
+     stage("Build image") {
+            steps {
+                script {
+                    echo("************************** Build Image Start**************************")
+                    //sh "sed -i  's/Version/V:${env.BUILD_ID}/g' server.js"
+                    myapp = docker.build("siteshm/front-end:${env.BUILD_ID}")
+                    echo("************************** Build Image Completed**************************")
+                }
+            }
+        }
+     stage("SysDig Scan and Push Image") {
+            steps {
+                script {
+                    echo("************************** SysDig Scan Image Start**************************")
+                    sh "docker run --rm quay.io/sysdig/secure-inline-scan:2 siteshm/front-end:${env.BUILD_ID} --sysdig-token f4033bbe-0564-4940-9cda-54257bcba4bc --sysdig-url https://us2.app.sysdig.com -o"
+                    echo("************************** SysDig Scan Image Complete**************************")
+                try {
+                def buildCoreImage = input(
+                    message: 'Do you want to move Image to Approved DockerHub?',
+                    ok: 'Yes', 
+                    id: 'ScanApprove',
+                    parameters: [
+                        booleanParam(defaultValue: true, description: 'Push the button to move image.',name: 'Yes?')
+                    ]
+                )
+                echo "Build core?:" + buildCoreImage
+                if (buildCoreImage == true){
+                    docker.withRegistry('https://registry.hub.docker.com', 'dockerhub_id_sitesh') {
+                    myapp.push("${env.BUILD_ID}")
+                    echo("************************** Docker Image Push Completed**************************")
+                        }
+                    }
+                else    
+                    {        
+                    System.exit(0)
+                        }
+                    }
+                catch (Exception err)
+                    {
+                throw err
+                    }
+                }
+            }
+         }
+     stage('Switch to sock-shop Namespace ') {
+             steps {
+                script{
+                    echo("************************** Namespace Check Start**************************")
+                    def namespace = sh (script :"/usr/local/bin/kubectl get ns  | grep sock-shop | awk '{print \$1}'", returnStdout:true)
+                    def ns = namespace.trim()
+                    if (ns.equals("sock-shop"))
+                        {
+                           echo "sock-shop namespace exsist"
+                        }
+                    else
+                        {
+                         sh "/usr/local/bin/kubectl create namespace sock-shop"
+                         sh "/usr/local/bin/kubectl label namespace sock-shop istio-injection=enabled"
+                         }
+                    echo("************************** Namespace Check END**************************")
+                        }
+                      }// Namespace Creation
+                    }
+     stage('Deployment') {
+          steps {
+         script{
+            if (params.deployStrategy == 'Rolling-Update') {
+                sh "sed -i  's/front-end:Test/front-end:${env.BUILD_ID}/g' deploy.yaml"               
+                sh "/usr/local/bin/kubectl apply -f deploy.yaml "
+                 sh "/usr/local/bin/kubectl apply -f service.yaml  "
+            }
+            else if (params.deployStrategy == 'Blue-Green') {
+                sh "/usr/local/bin/kubectl apply -f servicestage.yaml  "
+                sh "sed -i 's/front-end:canary/front-end:${env.BUILD_ID}/g' canary.yaml"
+                sh "/usr/local/bin/kubectl apply -f canary.yaml  "
+                def canaryport = sh (script :"/usr/local/bin/kubectl -n sock-shop get service front-end-svc-stage -o jsonpath=\'{.spec.ports[?(@.name==\"svc-stage-v2\")].nodePort}\'  ", returnStdout:true).trim()
+                def liveport = sh (script :"/usr/local/bin/kubectl -n sock-shop get service front-end -o jsonpath=\'{.spec.ports[?(@.name==\"service-stable-port\")].nodePort}\'  ", returnStdout:true).trim()
+                echo "Blue App Url : http://13.59.165.207:${canaryport}"
+                echo "Green App Url: http://13.59.165.207:${liveport}"
+                sleep(time:7,unit:"SECONDS")
+                input id: 'Bluegreen', message: 'Proceed to Blue Deployment - Switch traffic to Blue ?'
+                echo "proceeding to blue deployment..."
+                def DEPLOY_NAME = sh (script: "yq e '.metadata.name' deploy.yaml", returnStdout: true).trim()
+                sh "/usr/local/bin/kubectl patch deployment ${DEPLOY_NAME} -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"front-end\",\"image\":\"siteshm/front-end:${env.BUILD_ID}\"}]}}}}' -n sock-shop  "
+                sh "/usr/local/bin/kubectl delete -f servicestage.yaml  "
+            }
+            else if (params.deployStrategy == 'Canary') {
+                sh "/usr/local/bin/kubectl apply -f service.yaml  "
+                sh "sed -i 's/front-end:canary/front-end:${env.BUILD_ID}/g' canary.yaml"
+                sh "/usr/local/bin/kubectl apply -f canary.yaml  "
+                sh "export PROD_WEIGHT=100 CANARY_WEIGHT=0 && envsubst < istio.yaml > test.yaml | /usr/local/bin/kubectl apply -f test.yaml"
+                def liveport = sh (script :"/usr/local/bin/kubectl -n istio-system get service istio-ingressgateway -o jsonpath=\'{.spec.ports[?(@.name==\"http2\")].nodePort}\'  ", returnStdout:true).trim()
+                def userInput = '0-100'
+                while( userInput ){
+                userInput = input message: 'Canary Stages', id: 'canary', parameters: [choice(choices: ['70-30', '50-50', '30-70', '0-100'], description: 'Select Canary Weightage', name: 'CanaryWeight')]
+                if (userInput.equals("70-30")) {
+                   sh "export PROD_WEIGHT=70 CANARY_WEIGHT=30 && envsubst < istio.yaml > test.yaml | /usr/local/bin/kubectl apply -f test.yaml"
+                   echo "App Url: http://13.59.165.207:${liveport}"
+                }
+                else if (userInput.equals("50-50")) {
+                   sh "export PROD_WEIGHT=50 CANARY_WEIGHT=50 && envsubst < istio.yaml > test.yaml | /usr/local/bin/kubectl apply -f test.yaml"
+                   echo "App Url: http://13.59.165.207:${liveport}"
+                }
+                else if (userInput.equals("30-70")) {
+                   sh "export PROD_WEIGHT=30 CANARY_WEIGHT=70 && envsubst < istio.yaml > test.yaml | /usr/local/bin/kubectl apply -f test.yaml"
+                   echo "App Url: http://13.59.165.207:${liveport}"
+                }
+                else if (userInput.equals("0-100")) {
+                   sh "export PROD_WEIGHT=0 CANARY_WEIGHT=100 && envsubst < istio.yaml > test.yaml | /usr/local/bin/kubectl apply -f test.yaml"
+                   echo "App Url: http://13.59.165.207:${liveport}"
+                   break
+                }
+             }
+            }
+            else if (params.deployStrategy == 'AB-Testing') {
+                sh "/usr/local/bin/kubectl apply -f service.yaml  "
+                def liveport = sh (script :"/usr/local/bin/kubectl -n istio-system get service istio-ingressgateway -o jsonpath=\'{.spec.ports[?(@.name==\"http2\")].nodePort}\'  ", returnStdout:true).trim()
+                sh "sed -i 's/front-end:canary/front-end:${env.BUILD_ID}/g' canary.yaml"
+                sh "/usr/local/bin/kubectl apply -f canary.yaml  "
+                sh "export PROD_WEIGHT=70 CANARY_WEIGHT=30 && envsubst < istio.yaml > test.yaml | /usr/local/bin/kubectl apply -f test.yaml"
+                echo "App Url: http://13.59.165.207:${liveport}"
+                }
+             }
+            }
+          }
+      stage('Complete Pipeline'){
+        steps {
+         script{
+            input id: 'completepipeline', message: 'Do you want to complete pipeline ?'
+            def CANARY_NAME = sh (script: "yq e '.metadata.name' canary.yaml", returnStdout: true).trim()
+            def CANARY_DEPLOY = sh (script: "/usr/local/bin/kubectl get po -n sock-shop | grep -o ${CANARY_NAME} | awk 'NR==1{print \$1}'", returnStdout: true).trim()
+            if (CANARY_NAME.equals(CANARY_DEPLOY)){
+                echo "Completing Pipeline..."
+                sh "/usr/local/bin/kubectl delete -f canary.yaml  "
+                sh "export PROD_WEIGHT=100 CANARY_WEIGHT=0 && envsubst < istio.yaml > test.yaml | /usr/local/bin/kubectl apply -f test.yaml"
+                }
+         }
+        }
+      }
+      stage('Load Test - JMeter') {
+        steps {
+             script{
+            echo("************************** JMeter Load Testing Start**************************")        
+            //sh '''/opt/apache-jmeter-5.4.1/bin/jmeter -n -t /opt/apache-jmeter-5.4.1/jpetaws.jmx -l result.csv '''
+            //step([$class: 'ArtifactArchiver', artifacts: '**/*.csv, **/jmeter.log'])
+            //step([$class: 'ArtifactArchiver', artifacts: 'Test.html', fingerprint: true])
+            }    
+        }
+    }
+      stage('RollBack Deployment'){
+        steps {
+         script{
+            try {
+            input id: 'rollback', message: 'Do you want to rollback deployment ?'
+            def Docker_Version
+            def DEPLOY_NAME = sh (script: "yq e '.metadata.name' deploy.yaml", returnStdout: true).trim()
+            Docker_Version = input message: 'Select Docker Image Version to Rollback ',id: 'dockerversion', parameters: [imageTag(credentialId: 'dockerhub_id_sitesh', description: 'Docker Image List Versions', filter: '.*', image: 'siteshm/front-end', name: 'DOCKER_IMAGE', registry: 'https://registry.hub.docker.com', tagOrder: 'DSC_VERSION')]
+            sh "/usr/local/bin/kubectl patch deployment ${DEPLOY_NAME} -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"front-end\",\"image\":\"${Docker_Version}\"}]}}}}' -n sock-shop  "
+            echo "Deployment ${DEPLOY_NAME} rolledback "
+            if (CANARY_NAME.equals(CANARY_DEPLOY)){
+                sh "/usr/local/bin/kubectl delete -f canary.yaml  "
+                sh "export PROD_WEIGHT=100 CANARY_WEIGHT=0 && envsubst < istio.yaml > test.yaml | /usr/local/bin/kubectl apply -f test.yaml"
+                }
+            }
+            catch (Exception err) {
+            echo " Pipeline Completed"
+            currentBuild.result = "SUCCESS"
+            }
+            }
+          }
+         } 
+        }// stages closed
+    }
